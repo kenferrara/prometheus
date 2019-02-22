@@ -20,6 +20,10 @@ function showUnhealthy(_, container) {
   if (isHealthy) { $(container).hide(); }
 }
 
+// function refreshContainer(_, container) {
+//   $(".table-container").load(location.href + " .table-container");
+// }
+
 function init() {
   if (!localStorage.selectedTab || localStorage.selectedTab == "all-targets"){
     $("#all-targets").parent().addClass("active");
@@ -50,7 +54,6 @@ function init() {
 
   $("#showTargets :input").change(function() {
     const target = $(this).attr("id");
-
     if (target === "all-targets") {
       $(".table-container").each(showAll);
       localStorage.setItem("selectedTab", "all-targets");
@@ -59,6 +62,23 @@ function init() {
       localStorage.setItem("selectedTab", "unhealthy-targets");
     }
   });
+
 }
 
 $(init);
+
+ $(document).ready(function(){
+   $(document).on('click','div[id="showTargets"]', function() {
+//     //window.location.reload();
+//     // does work refreshContainer();
+     //console.log(location.href + ".table-container");
+     
+     //$(".table-container").innerHTML="";
+     $(".table-container:gt(0)").remove();
+     $(".table-container").load(location.href + " .table-container");
+    //$(".table-container").load("targets.html");
+    //$(".table-container").replaceWith($(".table-container"));
+    //$("div.table-container").html($("div.table-container"));
+    //(".table-container").load(" .table-container");
+     });
+ });
