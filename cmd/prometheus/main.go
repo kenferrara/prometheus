@@ -98,6 +98,7 @@ func main() {
 		newFlagRetentionDuration model.Duration
 	)
 
+	//TODO: ADD SOMETHING TO THIS STRUCT TO HOLD TLSCONFIG FILE LOCATION
 	cfg := struct {
 		configFile string
 
@@ -235,6 +236,8 @@ func main() {
 
 	a.Flag("web.cors.origin", `Regex for CORS origin. It is fully anchored. Eg. 'https?://(domain1|domain2)\.com'`).
 		Default(".*").StringVar(&cfg.corsRegexString)
+
+	// TODO: ADD A FLAG FOR TLSCONFIG FILE
 
 	promlogflag.AddFlags(a, &cfg.promlogConfig)
 

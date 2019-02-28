@@ -112,6 +112,7 @@ func init() {
 }
 
 // Handler serves various HTTP endpoints of the Prometheus server
+// TODO: ADD A REFERENCE TO THE TLSCONFIG YML FILE AND/OR CONFIG STRUCT, AND A *tls.Config
 type Handler struct {
 	logger log.Logger
 
@@ -207,6 +208,7 @@ func instrumentHandler(handlerName string, handler http.HandlerFunc) http.Handle
 }
 
 // New initializes a new web Handler.
+// TODO: IN New() CREATE A DEFAULT tls.Config TO BE APPLIED TO SERVERS IN handler.Run() AND STORE IN Handler STRUCT
 func New(logger log.Logger, o *Options) *Handler {
 	router := route.New().WithInstrumentation(instrumentHandler)
 	cwd, err := os.Getwd()
@@ -373,6 +375,9 @@ func serveDebug(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
+// TODO: WRITE A FUNCTION TO ADD TLSCONFIG TO HANDLER
+// e.g. func (h *Handler) AddTLSConfig(config) {}
+
 // Ready sets Handler to be ready.
 func (h *Handler) Ready() {
 	atomic.StoreUint32(&h.ready, 1)
@@ -426,11 +431,17 @@ func (h *Handler) Run(ctx context.Context) error {
 		conntrack.TrackWithName("http"),
 		conntrack.TrackWithTracing())
 
+	// TODO: ADD CREDENTIALS TO LISTENER 
+	// e.g listener = tls.NewListener(listener, *tls.Config)
+
 	var (
 		m       = cmux.New(listener)
 		grpcl   = m.Match(cmux.HTTP2HeaderField("content-type", "application/grpc"))
 		httpl   = m.Match(cmux.HTTP1Fast())
-		grpcSrv = grpc.NewServer()
+		grpcSrv = grpc.NewServer() // TODO: PASS IN TLS CREDENTIALS HERE
+		// e.g creds, err := credentials.NewClientTLSFromFile(certFile, keyFile)
+		//     grpc.NewServer(grpc.Creds(creds))
+		// SEE https://grpc.io/docs/guides/auth.html#with-server-authentications-ssltls
 	)
 	av2 := api_v2.New(
 		h.options.TSDB,
@@ -475,6 +486,9 @@ func (h *Handler) Run(ctx context.Context) error {
 		ErrorLog:    errlog,
 		ReadTimeout: h.options.ReadTimeout,
 	}
+	// TODO: ADD TLSCONFIG TO httpSrv
+
+	// TODO: CREATE serve(server, listener) FUNCTION VARIABLE TO CALL IN PLACE OF Serve(listener) BELOW
 
 	errCh := make(chan error)
 	go func() {
