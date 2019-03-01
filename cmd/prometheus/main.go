@@ -98,7 +98,6 @@ func main() {
 		newFlagRetentionDuration model.Duration
 	)
 
-	//TODO: ADD SOMETHING TO THIS STRUCT TO HOLD TLSCONFIG FILE LOCATION
 	cfg := struct {
 		configFile string
 
@@ -121,6 +120,8 @@ func main() {
 		corsRegexString string
 
 		promlogConfig promlog.Config
+
+		tlsConfigPath string
 	}{
 		notifier: notifier.Options{
 			Registerer: prometheus.DefaultRegisterer,
@@ -237,7 +238,7 @@ func main() {
 	a.Flag("web.cors.origin", `Regex for CORS origin. It is fully anchored. Eg. 'https?://(domain1|domain2)\.com'`).
 		Default(".*").StringVar(&cfg.corsRegexString)
 
-	// TODO: ADD A FLAG FOR TLSCONFIG FILE
+	a.Flag("web.tls-config", "Configuration file path for frontend TLS").Default("").StringVar(&cfg.tlsConfigPath)
 
 	promlogflag.AddFlags(a, &cfg.promlogConfig)
 
@@ -389,23 +390,33 @@ func main() {
 		conntrack.DialWithTracing(),
 	)
 
-	reloaders := []func(cfg *config.Config) error{
+	reloaders := []func(conf *config.Config) error{
 		remoteStorage.ApplyConfig,
-		webHandler.ApplyConfig,
+		func(conf *config.Config) error {
+			level.Info(logger).Log("msg", "Loading webHandler")
+			err := webHandler.ApplyConfig(conf)
+			if err != nil {
+				return err
+			}
+			if cfg.tlsConfigPath != "" {
+				webHandler.AddTLSConfig(cfg.tlsConfigPath)
+			}
+			return nil
+		},
 		// The Scrape and notifier managers need to reload before the Discovery manager as
 		// they need to read the most updated config when receiving the new targets list.
 		scrapeManager.ApplyConfig,
-		func(cfg *config.Config) error {
+		func(conf *config.Config) error {
 			c := make(map[string]sd_config.ServiceDiscoveryConfig)
-			for _, v := range cfg.ScrapeConfigs {
+			for _, v := range conf.ScrapeConfigs {
 				c[v.JobName] = v.ServiceDiscoveryConfig
 			}
 			return discoveryManagerScrape.ApplyConfig(c)
 		},
 		notifierManager.ApplyConfig,
-		func(cfg *config.Config) error {
+		func(conf *config.Config) error {
 			c := make(map[string]sd_config.ServiceDiscoveryConfig)
-			for _, v := range cfg.AlertingConfig.AlertmanagerConfigs {
+			for _, v := range conf.AlertingConfig.AlertmanagerConfigs {
 				// AlertmanagerConfigs doesn't hold an unique identifier so we use the config hash as the identifier.
 				b, err := json.Marshal(v)
 				if err != nil {
@@ -415,10 +426,10 @@ func main() {
 			}
 			return discoveryManagerNotify.ApplyConfig(c)
 		},
-		func(cfg *config.Config) error {
+		func(conf *config.Config) error {
 			// Get all rule files matching the configuration paths.
 			var files []string
-			for _, pat := range cfg.RuleFiles {
+			for _, pat := range conf.RuleFiles {
 				fs, err := filepath.Glob(pat)
 				if err != nil {
 					// The only error can be a bad pattern.
@@ -426,7 +437,7 @@ func main() {
 				}
 				files = append(files, fs...)
 			}
-			return ruleManager.Update(time.Duration(cfg.GlobalConfig.EvaluationInterval), files)
+			return ruleManager.Update(time.Duration(conf.GlobalConfig.EvaluationInterval), files)
 		},
 	}
 
@@ -655,6 +666,22 @@ func main() {
 		// Web handler.
 		g.Add(
 			func() error {
+				if !webHandler.IsReady() {
+
+					if err := reloadConfig(cfg.configFile, logger, func(conf *config.Config) error {
+						level.Info(logger).Log("msg", "Loading webHandler")
+						err := webHandler.ApplyConfig(conf)
+						if err != nil {
+							return err
+						}
+						if cfg.tlsConfigPath != "" {
+							webHandler.AddTLSConfig(cfg.tlsConfigPath)
+						}
+						return nil
+					}); err != nil {
+						return fmt.Errorf("error loading config from %q: %s", cfg.configFile, err)
+					}
+				}
 				if err := webHandler.Run(ctxWeb); err != nil {
 					return fmt.Errorf("error starting web server: %s", err)
 				}

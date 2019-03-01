@@ -15,6 +15,7 @@ package web
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -37,6 +38,9 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
+
+	"github.com/prometheus/common/https"
 
 	template_text "text/template"
 
@@ -112,7 +116,6 @@ func init() {
 }
 
 // Handler serves various HTTP endpoints of the Prometheus server
-// TODO: ADD A REFERENCE TO THE TLSCONFIG YML FILE AND/OR CONFIG STRUCT, AND A *tls.Config
 type Handler struct {
 	logger log.Logger
 
@@ -189,6 +192,14 @@ type Options struct {
 	PageTitle                  string
 	RemoteReadSampleLimit      int
 	RemoteReadConcurrencyLimit int
+
+	TLSConfig tlsStruct
+}
+
+type tlsStruct struct {
+	config   *tls.Config
+	certPath string
+	keyPath  string
 }
 
 func instrumentHandlerWithPrefix(prefix string) func(handlerName string, handler http.HandlerFunc) http.HandlerFunc {
@@ -208,7 +219,6 @@ func instrumentHandler(handlerName string, handler http.HandlerFunc) http.Handle
 }
 
 // New initializes a new web Handler.
-// TODO: IN New() CREATE A DEFAULT tls.Config TO BE APPLIED TO SERVERS IN handler.Run() AND STORE IN Handler STRUCT
 func New(logger log.Logger, o *Options) *Handler {
 	router := route.New().WithInstrumentation(instrumentHandler)
 	cwd, err := os.Getwd()
@@ -375,8 +385,20 @@ func serveDebug(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
-// TODO: WRITE A FUNCTION TO ADD TLSCONFIG TO HANDLER
-// e.g. func (h *Handler) AddTLSConfig(config) {}
+// AddTLSConfig applies the submitted config to be used with the http/API server
+func (h *Handler) AddTLSConfig(s string) {
+	level.Info(h.logger).Log("msg", "adding tls config to webHandler", "path", s)
+	config, certPath, keyPath := https.GetConfigAndPaths(s)
+	h.options.TLSConfig = tlsStruct{
+		config:   config,
+		certPath: certPath,
+		keyPath:  keyPath,
+	}
+}
+
+func (h *Handler) hasTLS() bool {
+	return len(h.options.TLSConfig.certPath)>0
+}
 
 // Ready sets Handler to be ready.
 func (h *Handler) Ready() {
@@ -384,7 +406,7 @@ func (h *Handler) Ready() {
 }
 
 // Verifies whether the server is ready or not.
-func (h *Handler) isReady() bool {
+func (h *Handler) IsReady() bool {
 	ready := atomic.LoadUint32(&h.ready)
 	return ready > 0
 }
@@ -392,7 +414,7 @@ func (h *Handler) isReady() bool {
 // Checks if server is ready, calls f if it is, returns 503 if it is not.
 func (h *Handler) testReady(f http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if h.isReady() {
+		if h.IsReady() {
 			f(w, r)
 		} else {
 			w.WriteHeader(http.StatusServiceUnavailable)
@@ -418,7 +440,7 @@ func (h *Handler) Reload() <-chan chan error {
 
 // Run serves the HTTP endpoints.
 func (h *Handler) Run(ctx context.Context) error {
-	level.Info(h.logger).Log("msg", "Start listening for connections", "address", h.options.ListenAddress)
+	level.Info(h.logger).Log("msg", "Start listening for connections", "address", h.options.ListenAddress, "tls-cert", h.options.TLSConfig.certPath)
 
 	listener, err := net.Listen("tcp", h.options.ListenAddress)
 	if err != nil {
@@ -431,18 +453,25 @@ func (h *Handler) Run(ctx context.Context) error {
 		conntrack.TrackWithName("http"),
 		conntrack.TrackWithTracing())
 
-	// TODO: ADD CREDENTIALS TO LISTENER 
-	// e.g listener = tls.NewListener(listener, *tls.Config)
+	if h.hasTLS() {
+		level.Info(h.logger).Log("msg", "Adding TLS config to listener")
+		listener = tls.NewListener(listener, h.options.TLSConfig.config)
+	}
 
 	var (
 		m       = cmux.New(listener)
 		grpcl   = m.Match(cmux.HTTP2HeaderField("content-type", "application/grpc"))
 		httpl   = m.Match(cmux.HTTP1Fast())
-		grpcSrv = grpc.NewServer() // TODO: PASS IN TLS CREDENTIALS HERE
-		// e.g creds, err := credentials.NewClientTLSFromFile(certFile, keyFile)
-		//     grpc.NewServer(grpc.Creds(creds))
-		// SEE https://grpc.io/docs/guides/auth.html#with-server-authentications-ssltls
+		grpcSrv *grpc.Server
 	)
+
+	if h.hasTLS() {
+		creds := credentials.NewTLS(h.options.TLSConfig.config)
+		grpcSrv = grpc.NewServer(grpc.Creds(creds))
+	} else {
+		grpcSrv = grpc.NewServer()
+	}
+
 	av2 := api_v2.New(
 		h.options.TSDB,
 		h.options.EnableAdminAPI,
@@ -486,13 +515,19 @@ func (h *Handler) Run(ctx context.Context) error {
 		ErrorLog:    errlog,
 		ReadTimeout: h.options.ReadTimeout,
 	}
-	// TODO: ADD TLSCONFIG TO httpSrv
 
-	// TODO: CREATE serve(server, listener) FUNCTION VARIABLE TO CALL IN PLACE OF Serve(listener) BELOW
+	if h.hasTLS() {
+		httpSrv.TLSConfig = h.options.TLSConfig.config
+	}
 
 	errCh := make(chan error)
 	go func() {
-		errCh <- httpSrv.Serve(httpl)
+		errCh <- func() error {
+			if h.hasTLS() {
+				return httpSrv.ServeTLS(httpl, h.options.TLSConfig.certPath, h.options.TLSConfig.keyPath)
+			}
+			return httpSrv.Serve(httpl)
+		}()
 	}()
 	go func() {
 		errCh <- grpcSrv.Serve(grpcl)
